@@ -121,12 +121,21 @@ endif()
 # we do this manually by adding flags.
 set(ATOMIC_LINKAGE_FIX FALSE)
 if(MSVC)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(MSVC_FLAG  -D__x86_64__)
+    # Detect target architecture using CMAKE_SYSTEM_PROCESSOR or compiler checks
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+        set(MSVC_FLAG -D__aarch64__)
+        set(MSVC_TCG_PATH /I${CMAKE_CURRENT_SOURCE_DIR}/qemu/tcg/aarch64)
+        set(MSVC_TARGET_ARCH "aarch64")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(MSVC_FLAG -D__x86_64__)
+        set(MSVC_TCG_PATH /I${CMAKE_CURRENT_SOURCE_DIR}/qemu/tcg/i386)
+        set(MSVC_TARGET_ARCH "x86_64")
     elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
-        set(MSVC_FLAG  -D__i386__)
+        set(MSVC_FLAG -D__i386__)
+        set(MSVC_TCG_PATH /I${CMAKE_CURRENT_SOURCE_DIR}/qemu/tcg/i386)
+        set(MSVC_TARGET_ARCH "i386")
     else()
-        message(FATAL_ERROR "Neither WIN64 or WIN32!")
+        message(FATAL_ERROR "Unsupported architecture!")
     endif()
 
     add_compile_options(
@@ -135,7 +144,7 @@ if(MSVC)
         -D_CRT_SECURE_NO_WARNINGS
         -DWIN32_LEAN_AND_MEAN
         ${MSVC_FLAG}
-        /I${CMAKE_CURRENT_SOURCE_DIR}/qemu/tcg/i386
+        ${MSVC_TCG_PATH}
     )
 
     # Disable some warnings
@@ -1214,7 +1223,15 @@ if(MSVC)
         qemu/util/oslib-win32.c
         qemu/util/qemu-thread-win32.c
     )
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    if(MSVC_TARGET_ARCH STREQUAL "aarch64")
+        # ARM64 uses armasm64 for assembly - use custom command to avoid C compiler flags
+        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/setjmp-wrapper-win32-arm64.obj"
+            COMMAND armasm64 -o "${CMAKE_CURRENT_BINARY_DIR}/setjmp-wrapper-win32-arm64.obj" "${CMAKE_CURRENT_SOURCE_DIR}/qemu/util/setjmp-wrapper-win32-arm64.asm"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/qemu/util/setjmp-wrapper-win32-arm64.asm"
+            COMMENT "Building ARM64 setjmp wrapper"
+        )
+        set(UNICORN_COMMON_SRCS ${UNICORN_COMMON_SRCS} "${CMAKE_CURRENT_BINARY_DIR}/setjmp-wrapper-win32-arm64.obj")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
         if(MSVC_VERSION LESS 1600 AND MSVC_IDE)
             add_custom_command(OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/build/setjmp-wrapper-win32.dir/setjmp-wrapper-win32.obj"
                 COMMAND ml64 /c /nologo /Fo"${CMAKE_CURRENT_SOURCE_DIR}/build/setjmp-wrapper-win32.dir/setjmp-wrapper-win32.obj" /W3 /errorReport:prompt /Ta"${CMAKE_CURRENT_SOURCE_DIR}/qemu/util/setjmp-wrapper-win32.asm"
