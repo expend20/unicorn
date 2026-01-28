@@ -379,8 +379,10 @@ fn main() {
             } else {
                 println!("cargo:rustc-link-arg=-Wl,-allow-multiple-definition");
                 println!("cargo:rustc-link-lib=static=unicorn");
+                if !cc::Build::new().get_compiler().is_like_msvc() {
                 println!("cargo:rustc-link-lib=pthread");
                 println!("cargo:rustc-link-lib=m");
+                }
             }
         }
         Err(_) => {
