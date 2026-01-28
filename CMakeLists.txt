@@ -1224,12 +1224,13 @@ if(MSVC)
         qemu/util/qemu-thread-win32.c
     )
     if(MSVC_TARGET_ARCH STREQUAL "aarch64")
-        # ARM64 uses armasm64 for assembly - use custom command to avoid C compiler flags
+        # ARM64 uses armasm64 for assembly
         add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/setjmp-wrapper-win32-arm64.obj"
             COMMAND armasm64 -o "${CMAKE_CURRENT_BINARY_DIR}/setjmp-wrapper-win32-arm64.obj" "${CMAKE_CURRENT_SOURCE_DIR}/qemu/util/setjmp-wrapper-win32-arm64.asm"
             DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/qemu/util/setjmp-wrapper-win32-arm64.asm"
             COMMENT "Building ARM64 setjmp wrapper"
         )
+        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/setjmp-wrapper-win32-arm64.obj" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
         set(UNICORN_COMMON_SRCS ${UNICORN_COMMON_SRCS} "${CMAKE_CURRENT_BINARY_DIR}/setjmp-wrapper-win32-arm64.obj")
     elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
         if(MSVC_VERSION LESS 1600 AND MSVC_IDE)
@@ -1483,6 +1484,13 @@ if (UNICORN_LEGACY_STATIC_ARCHIVE)
         # Rename the "static" lib to avoid filename clash.
         set_target_properties(unicorn PROPERTIES OUTPUT_NAME "unicorn-static")
         bundle_static_library(unicorn unicorn_archive unicorn)
+    endif()
+    # Merge ARM64 setjmp wrapper into the archive (bundle_static_library doesn't include external objects)
+    if(MSVC AND MSVC_TARGET_ARCH STREQUAL "aarch64")
+        add_custom_command(TARGET unicorn_archive POST_BUILD
+            COMMAND lib /NOLOGO "$<TARGET_FILE:unicorn_archive>" "${CMAKE_CURRENT_BINARY_DIR}/setjmp-wrapper-win32-arm64.obj" /OUT:"$<TARGET_FILE:unicorn_archive>"
+            COMMENT "Merging ARM64 setjmp wrapper into unicorn archive"
+        )
     endif()
 endif()
 
