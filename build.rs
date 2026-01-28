@@ -145,7 +145,8 @@ fn build_with_cmake() {
     } else {
         println!("cargo:rustc-link-lib=static=unicorn");
     }
-    if !compiler.is_like_msvc() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "windows" && !compiler.is_like_msvc() {
         println!("cargo:rustc-link-lib=pthread");
         println!("cargo:rustc-link-lib=m");
     }
@@ -379,7 +380,8 @@ fn main() {
             } else {
                 println!("cargo:rustc-link-arg=-Wl,-allow-multiple-definition");
                 println!("cargo:rustc-link-lib=static=unicorn");
-                if !cc::Build::new().get_compiler().is_like_msvc() {
+                let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+                if target_os != "windows" && !cc::Build::new().get_compiler().is_like_msvc() {
                 println!("cargo:rustc-link-lib=pthread");
                 println!("cargo:rustc-link-lib=m");
                 }
