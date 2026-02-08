@@ -154,13 +154,7 @@ fn build_with_cmake() {
 
 fn watch_source_files() {
     let current_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let project_root = std::path::Path::new(&current_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
+    let project_root = std::path::Path::new(&current_dir);
 
     println!(
         "cargo:rerun-if-changed={}",
