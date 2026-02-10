@@ -1279,6 +1279,1915 @@ static void test_x86_correct_address_in_long_jump_hook(void)
     OK(uc_close(uc));
 }
 
+static void test_x86_avx_vaddps_ymm(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4], ymm1[4], ymm2[4];
+
+    /*
+     * Use register writes to set up YMM values directly, then vaddps.
+     *
+     * vaddps  ymm2, ymm0, ymm1; C5 FC 58 D1
+     */
+    char code[] = {
+        '\xC5', '\xFC', '\x58', '\xD1',             /* vaddps ymm2, ymm0, ymm1 */
+    };
+
+    /* Float data: 8 floats per YMM register */
+    float src0[8] = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };
+    float src1[8] = { 10.0f, 20.0f, 30.0f, 40.0f, 50.0f, 60.0f, 70.0f, 80.0f };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+
+    /* Write code */
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* Set YMM registers directly */
+    OK(uc_reg_write(uc, UC_X86_REG_YMM0, src0));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, src1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    /* Read ymm2 result */
+    OK(uc_reg_read(uc, UC_X86_REG_YMM2, &ymm2));
+
+    /* Verify vaddps result: ymm2 = ymm0 + ymm1 */
+    float *result = (float *)ymm2;
+    TEST_CHECK(result[0] == 11.0f);  /* 1 + 10 */
+    TEST_CHECK(result[1] == 22.0f);  /* 2 + 20 */
+    TEST_CHECK(result[2] == 33.0f);  /* 3 + 30 */
+    TEST_CHECK(result[3] == 44.0f);  /* 4 + 40 */
+    TEST_CHECK(result[4] == 55.0f);  /* 5 + 50 */
+    TEST_CHECK(result[5] == 66.0f);  /* 6 + 60 */
+    TEST_CHECK(result[6] == 77.0f);  /* 7 + 70 */
+    TEST_CHECK(result[7] == 88.0f);  /* 8 + 80 */
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vmovdqu_ymm(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4];
+
+    /*
+     * vmovdqu ymm0, [rax]     ; C5 FE 6F 00
+     */
+    char code[] = { '\xC5', '\xFE', '\x6F', '\x00' };
+
+    uint64_t data[4] = { 0x1111111122222222ULL, 0x3333333344444444ULL,
+                          0x5555555566666666ULL, 0x7777777788888888ULL };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+    OK(uc_mem_write(uc, 0x2000, data, sizeof(data)));
+
+    uint64_t rax = 0x2000;
+    OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, &ymm0));
+    TEST_CHECK(ymm0[0] == 0x1111111122222222ULL);
+    TEST_CHECK(ymm0[1] == 0x3333333344444444ULL);
+    TEST_CHECK(ymm0[2] == 0x5555555566666666ULL);
+    TEST_CHECK(ymm0[3] == 0x7777777788888888ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vzeroupper(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4];
+
+    /*
+     * Set ymm0 to all-ones via register write, then execute vzeroupper.
+     * vzeroupper should zero the upper 128 bits of all YMM registers.
+     *
+     * vzeroupper  ; C5 F8 77
+     */
+    char code[] = { '\xC5', '\xF8', '\x77' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* Set ymm0 to all-ones */
+    uint64_t all_ones[4] = { 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL,
+                              0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM0, &all_ones));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, &ymm0));
+    /* Lower 128 bits should be preserved */
+    TEST_CHECK(ymm0[0] == 0xFFFFFFFFFFFFFFFFULL);
+    TEST_CHECK(ymm0[1] == 0xFFFFFFFFFFFFFFFFULL);
+    /* Upper 128 bits should be zeroed */
+    TEST_CHECK(ymm0[2] == 0);
+    TEST_CHECK(ymm0[3] == 0);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vmovdqu_store(void)
+{
+    uc_engine *uc;
+    uint64_t data_out[4] = {0};
+
+    /*
+     * Set ymm0 via register write, then store to memory.
+     *
+     * vmovdqu [rax], ymm0  ; C5 FE 7F 00
+     */
+    char code[] = { '\xC5', '\xFE', '\x7F', '\x00' };
+
+    uint64_t ymm_val[4] = { 0xAAAABBBBCCCCDDDDULL, 0x1111222233334444ULL,
+                             0x5555666677778888ULL, 0x9999AAAABBBBCCCCULL };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    uint64_t rax = 0x2000;
+    OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM0, ymm_val));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_mem_read(uc, 0x2000, data_out, sizeof(data_out)));
+    TEST_CHECK(data_out[0] == 0xAAAABBBBCCCCDDDDULL);
+    TEST_CHECK(data_out[1] == 0x1111222233334444ULL);
+    TEST_CHECK(data_out[2] == 0x5555666677778888ULL);
+    TEST_CHECK(data_out[3] == 0x9999AAAABBBBCCCCULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vbroadcastss(void)
+{
+    uc_engine *uc;
+    uint64_t ymm1[4] = {0};
+    /*
+     * Store 0x42280000 (42.0f) at [rax], then broadcast to all 8 dwords of ymm1.
+     *
+     * vbroadcastss ymm1, [rax]  ; C4 E2 7D 18 08
+     */
+    char code[] = { '\xC4', '\xE2', '\x7D', '\x18', '\x08' };
+
+    uint32_t float_val = 0x42280000; /* 42.0f */
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+    OK(uc_mem_write(uc, 0x2000, &float_val, sizeof(float_val)));
+
+    uint64_t rax = 0x2000;
+    OK(uc_reg_write(uc, UC_X86_REG_RAX, &rax));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM1, ymm1));
+    /* All 8 dwords should be 0x42280000 */
+    TEST_CHECK(ymm1[0] == 0x4228000042280000ULL);
+    TEST_CHECK(ymm1[1] == 0x4228000042280000ULL);
+    TEST_CHECK(ymm1[2] == 0x4228000042280000ULL);
+    TEST_CHECK(ymm1[3] == 0x4228000042280000ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vperm2f128(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vperm2f128 ymm0, ymm1, ymm2, 0x31
+     *   imm8=0x31: low lane = lane 1 of ymm1 (src1[1]), high lane = lane 1 of ymm2 (src2[1])
+     *
+     * C4 E3 75 06 C2 31
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=06, modrm=C2 (mod=3, reg=0, rm=2)
+     *   imm8=0x31
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x75', '\x06', '\xC2', '\x31'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = { lane0: 0x1111111122222222 0x3333333344444444,
+     *           lane1: 0xAAAAAAAABBBBBBBB 0xCCCCCCCCDDDDDDDD } */
+    uint64_t ymm1[4] = { 0x1111111122222222ULL, 0x3333333344444444ULL,
+                          0xAAAAAAAABBBBBBBBULL, 0xCCCCCCCCDDDDDDDDULL };
+    /* ymm2 = { lane0: 0x5555555566666666 0x7777777788888888,
+     *           lane1: 0xEEEEEEEEFFFFFFFF 0x9999999900000000 } */
+    uint64_t ymm2[4] = { 0x5555555566666666ULL, 0x7777777788888888ULL,
+                          0xEEEEEEEEFFFFFFFFULL, 0x9999999900000000ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* imm8=0x31: low 4 bits=0x1 -> src1 lane 1, high 4 bits=0x3 -> src2 lane 1 */
+    TEST_CHECK(ymm0[0] == 0xAAAAAAAABBBBBBBBULL);  /* ymm1 lane 1 */
+    TEST_CHECK(ymm0[1] == 0xCCCCCCCCDDDDDDDDULL);
+    TEST_CHECK(ymm0[2] == 0xEEEEEEEEFFFFFFFFULL);  /* ymm2 lane 1 */
+    TEST_CHECK(ymm0[3] == 0x9999999900000000ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vinsertf128(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vinsertf128 ymm0, ymm1, xmm2, 1
+     *   Insert xmm2 into high 128 bits of ymm1, store in ymm0.
+     *
+     * C4 E3 75 18 C2 01
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=18, modrm=C2 (mod=3, reg=0, rm=2)
+     *   imm8=01
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x75', '\x18', '\xC2', '\x01'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = { 0x1111111111111111 0x2222222222222222
+     *           0x3333333333333333 0x4444444444444444 } */
+    uint64_t ymm1[4] = { 0x1111111111111111ULL, 0x2222222222222222ULL,
+                          0x3333333333333333ULL, 0x4444444444444444ULL };
+    /* xmm2 = { 0xAAAAAAAAAAAAAAAA 0xBBBBBBBBBBBBBBBB } */
+    uint64_t ymm2[4] = { 0xAAAAAAAAAAAAAAAAULL, 0xBBBBBBBBBBBBBBBBULL,
+                          0, 0 };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* Low lane from ymm1, high lane replaced by xmm2 */
+    TEST_CHECK(ymm0[0] == 0x1111111111111111ULL);
+    TEST_CHECK(ymm0[1] == 0x2222222222222222ULL);
+    TEST_CHECK(ymm0[2] == 0xAAAAAAAAAAAAAAAAULL);
+    TEST_CHECK(ymm0[3] == 0xBBBBBBBBBBBBBBBBULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vextractf128(void)
+{
+    uc_engine *uc;
+    uint64_t xmm0[2] = {0};
+
+    /*
+     * vextractf128 xmm0, ymm1, 1
+     *   Extract high 128 bits of ymm1 into xmm0.
+     *
+     * C4 E3 7D 19 C8 01
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=0b1111 (unused for vextractf128)
+     *   opcode=19, modrm=C8 (mod=3, reg=1, rm=0)
+     *   imm8=01
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x7D', '\x19', '\xC8', '\x01'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = { 0x1111111111111111 0x2222222222222222
+     *           0xAAAAAAAAAAAAAAAA 0xBBBBBBBBBBBBBBBB } */
+    uint64_t ymm1[4] = { 0x1111111111111111ULL, 0x2222222222222222ULL,
+                          0xAAAAAAAAAAAAAAAAULL, 0xBBBBBBBBBBBBBBBBULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+
+    /* Set xmm0 to garbage to confirm it gets overwritten */
+    uint64_t garbage[4] = { 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL,
+                             0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM0, garbage));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    /* Read full ymm0 to check upper bits are zeroed */
+    uint64_t ymm0_full[4] = {0};
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0_full));
+    /* xmm0 should have ymm1's high lane */
+    TEST_CHECK(ymm0_full[0] == 0xAAAAAAAAAAAAAAAAULL);
+    TEST_CHECK(ymm0_full[1] == 0xBBBBBBBBBBBBBBBBULL);
+    /* Upper 128 bits should be zeroed by the helper */
+    TEST_CHECK(ymm0_full[2] == 0);
+    TEST_CHECK(ymm0_full[3] == 0);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vpermilps(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpermilps ymm0, ymm1, 0x1B  (reverse dword order within each lane)
+     * imm8=0x1B = 0b00_01_10_11 -> select [3,2,1,0] within each lane
+     *
+     * C4 E3 7D 04 C1 1B
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=0b1111 (unused)
+     *   opcode=04, modrm=C1 (mod=3, reg=0, rm=1)
+     *   imm8=0x1B
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x7D', '\x04', '\xC1', '\x1B'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = { dwords: 0x11111111 0x22222222 0x33333333 0x44444444
+     *                   0x55555555 0x66666666 0x77777777 0x88888888 } */
+    uint64_t ymm1[4] = { 0x2222222211111111ULL, 0x4444444433333333ULL,
+                          0x6666666655555555ULL, 0x8888888877777777ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* imm=0x1B reverses: dword0=src[3], dword1=src[2], dword2=src[1], dword3=src[0]
+     * Lane 0: 0x44444444 0x33333333 0x22222222 0x11111111
+     * Lane 1: 0x88888888 0x77777777 0x66666666 0x55555555 */
+    TEST_CHECK(ymm0[0] == 0x3333333344444444ULL);
+    TEST_CHECK(ymm0[1] == 0x1111111122222222ULL);
+    TEST_CHECK(ymm0[2] == 0x7777777788888888ULL);
+    TEST_CHECK(ymm0[3] == 0x5555555566666666ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vpermilpd(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpermilpd ymm0, ymm1, 0x05
+     * imm8=0x05 = 0b0101 -> bit0=1, bit1=0, bit2=1, bit3=0
+     * For YMM: qword0=src_lane0[1], qword1=src_lane0[0],
+     *          qword2=src_lane1[1], qword3=src_lane1[0]
+     *
+     * C4 E3 7D 05 C1 05
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=0b1111 (unused)
+     *   opcode=05, modrm=C1 (mod=3, reg=0, rm=1)
+     *   imm8=0x05
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x7D', '\x05', '\xC1', '\x05'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = { 0xAAAAAAAAAAAAAAAA 0xBBBBBBBBBBBBBBBB
+     *           0xCCCCCCCCCCCCCCCC 0xDDDDDDDDDDDDDDDD } */
+    uint64_t ymm1[4] = { 0xAAAAAAAAAAAAAAAAULL, 0xBBBBBBBBBBBBBBBBULL,
+                          0xCCCCCCCCCCCCCCCCULL, 0xDDDDDDDDDDDDDDDDULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* bit0=1: qword0 = lane0[1] = 0xBBBBBBBBBBBBBBBB
+     * bit1=0: qword1 = lane0[0] = 0xAAAAAAAAAAAAAAAA
+     * bit2=1: qword2 = lane1[1] = 0xDDDDDDDDDDDDDDDD
+     * bit3=0: qword3 = lane1[0] = 0xCCCCCCCCCCCCCCCC */
+    TEST_CHECK(ymm0[0] == 0xBBBBBBBBBBBBBBBBULL);
+    TEST_CHECK(ymm0[1] == 0xAAAAAAAAAAAAAAAAULL);
+    TEST_CHECK(ymm0[2] == 0xDDDDDDDDDDDDDDDDULL);
+    TEST_CHECK(ymm0[3] == 0xCCCCCCCCCCCCCCCCULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vpminsd(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vpminsd ymm0, ymm1, ymm2 - packed signed dword min (256-bit)
+     *
+     * C4 E2 75 39 C2
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=39, modrm=C2 (mod=3, reg=0, rm=2)
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x75', '\x39', '\xC2'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = signed dwords: 5, -3, 10, -20, 100, -200, 0, 1 */
+    uint64_t ymm1[4] = { 0xFFFFFFFD00000005ULL, 0xFFFFFFEC0000000AULL,
+                          0xFFFFFF3800000064ULL, 0x0000000100000000ULL };
+    /* ymm2 = signed dwords: 3, -1, 15, -10, 50, -100, 1, 0 */
+    uint64_t ymm2[4] = { 0xFFFFFFFF00000003ULL, 0xFFFFFFF60000000FULL,
+                          0xFFFFFF9C00000032ULL, 0x0000000000000001ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    uint64_t ymm0[4] = {0};
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* min(5,3)=3, min(-3,-1)=-3, min(10,15)=10, min(-20,-10)=-20 */
+    TEST_CHECK(ymm0[0] == 0xFFFFFFFD00000003ULL);
+    TEST_CHECK(ymm0[1] == 0xFFFFFFEC0000000AULL);
+    /* min(100,50)=50, min(-200,-100)=-200, min(0,1)=0, min(1,0)=0 */
+    TEST_CHECK(ymm0[2] == 0xFFFFFF3800000032ULL);
+    TEST_CHECK(ymm0[3] == 0x0000000000000000ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vtestps(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vtestps ymm0, ymm1  - test packed single-precision sign bits
+     *
+     * C4 E2 7D 0E C1
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   opcode=0E, modrm=C1 (mod=3, reg=0, rm=1)
+     *
+     * Sets ZF if (ymm1 AND ymm0) sign bits are all zero
+     * Sets CF if (ymm1 AND NOT ymm0) sign bits are all zero
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x7D', '\x0E', '\xC1', /* vtestps ymm0, ymm1 */
+        '\x9F',                                    /* lahf */
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm0 = all sign bits set (negative floats) */
+    uint64_t ymm0[4] = { 0x8000000080000000ULL, 0x8000000080000000ULL,
+                          0x8000000080000000ULL, 0x8000000080000000ULL };
+    /* ymm1 = all sign bits set */
+    uint64_t ymm1[4] = { 0x8000000080000000ULL, 0x8000000080000000ULL,
+                          0x8000000080000000ULL, 0x8000000080000000ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM0, ymm0));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    /* ymm1 AND ymm0 = all sign bits set -> ZF=0
+     * ymm1 AND NOT ymm0 = 0 -> CF=1 */
+    uint64_t rax = 0;
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+    uint8_t ah = (rax >> 8) & 0xFF;
+    /* ZF should be 0 (bit 6 of ah), CF should be 0 (bit 0 of ah)
+     * Wait - CF=1 means "all ANDN sign bits zero", so CF flag = 1 in EFLAGS
+     * but lahf stores flags in ah: bit 0 = CF
+     * VTESTPS: CF set if ANDN sign bits all zero. Here ANDN = ymm1 & ~ymm0.
+     * ymm1 has bit31 set, ~ymm0 has bit31 clear => ANDN bit31 = 0.
+     * All ANDN sign bits are 0, so CF=1. */
+    TEST_CHECK((ah & 0x01) == 0x01); /* CF=1 */
+    TEST_CHECK((ah & 0x40) == 0x00); /* ZF=0 */
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vtestpd(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vtestpd xmm0, xmm1  - VEX.128 form
+     *
+     * C4 E2 79 0F C1
+     *   VEX.128, pp=01(66), mmmmm=00010(0F38), W=0
+     *   opcode=0F, modrm=C1 (mod=3, reg=0, rm=1)
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x79', '\x0F', '\xC1', /* vtestpd xmm0, xmm1 */
+        '\x9F',                                    /* lahf */
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* xmm0 = 0 (all zero) */
+    uint64_t xmm0[2] = { 0, 0 };
+    /* xmm1 = sign bits set */
+    uint64_t xmm1[2] = { 0x8000000000000000ULL, 0x8000000000000000ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    /* AND(xmm1, xmm0) = 0 -> all sign bits zero -> ZF=1
+     * ANDN(xmm1, ~xmm0) -> xmm1 & ~xmm0 = has sign bits -> CF=0 */
+    uint64_t rax = 0;
+    OK(uc_reg_read(uc, UC_X86_REG_RAX, &rax));
+    uint8_t ah = (rax >> 8) & 0xFF;
+    TEST_CHECK((ah & 0x40) == 0x40); /* ZF=1 */
+    TEST_CHECK((ah & 0x01) == 0x00); /* CF=0 */
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vmaskmovps(void)
+{
+    uc_engine *uc;
+
+    /*
+     * Test VMASKMOVPS load (0F38 0x2C) and store (0F38 0x2E)
+     *
+     * vmaskmovps ymm0, ymm1, [rdx]  - conditional load
+     *   C4 E2 75 2C 02
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   vvvv=~1=0b1110 -> ymm1 (mask)
+     *   opcode=2C, modrm=02 (mod=0, reg=0, rm=2=rdx)
+     *
+     * vmaskmovps [rcx], ymm2, ymm3  - conditional store
+     *   C4 E2 6D 2E 01
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   vvvv=~2=0b1101 -> ymm2 (mask)
+     *   opcode=2E, modrm=01 (mod=0, reg=0, rm=1=rcx)
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x75', '\x2C', '\x02', /* vmaskmovps ymm0, ymm1, [rdx] */
+        '\xC4', '\xE2', '\x6D', '\x2E', '\x19', /* vmaskmovps [rcx], ymm2, ymm3 */
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* Source data at 0x2000: 8 floats */
+    uint32_t src_data[8] = { 0x3F800000, 0x40000000, 0x40400000, 0x40800000,
+                             0x40A00000, 0x40C00000, 0x40E00000, 0x41000000 };
+    OK(uc_mem_write(uc, 0x2000, src_data, sizeof(src_data)));
+
+    /* Clear destination area at 0x3000 */
+    uint64_t zeros[4] = {0, 0, 0, 0};
+    OK(uc_mem_write(uc, 0x3000, zeros, sizeof(zeros)));
+
+    /* ymm1 = mask: sign bit set for elements 0, 2, 5, 7 */
+    uint64_t ymm1[4] = { 0x00000000FF000000ULL, 0x0000000080000000ULL,
+                          0x8000000000000000ULL, 0xC000000000000000ULL };
+    /* ymm2 = mask for store: sign bit set for elements 1, 3, 4, 6 */
+    uint64_t ymm2[4] = { 0x8000000000000000ULL, 0xF000000000000000ULL,
+                          0x0000000080000000ULL, 0x00000000C0000000ULL };
+    /* ymm3 = data to store */
+    uint64_t ymm3[4] = { 0xDEADBEEFCAFEBABEULL, 0x1234567890ABCDEFULL,
+                          0xAAAAAAAABBBBBBBBULL, 0xCCCCCCCCDDDDDDDDULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM3, ymm3));
+
+    uint64_t rdx = 0x2000;
+    uint64_t rcx = 0x3000;
+    OK(uc_reg_write(uc, UC_X86_REG_RDX, &rdx));
+    OK(uc_reg_write(uc, UC_X86_REG_RCX, &rcx));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    /* Check load result in ymm0:
+     * Element 0: mask bit31=1 (0xFF000000) -> load src_data[0] = 0x3F800000
+     * Element 1: mask bit31=0 (0x00000000) -> 0
+     * Element 2: mask bit31=1 (0x80000000) -> load src_data[2] = 0x40400000
+     * Element 3: mask bit31=0 (0x00000000) -> 0
+     * Element 4: mask bit31=0 (0x00000000) -> 0
+     * Element 5: mask bit31=1 (0x80000000) -> load src_data[5] = 0x40C00000
+     * Element 6: mask bit31=0 (0x00000000) -> 0
+     * Element 7: mask bit31=1 (0xC0000000) -> load src_data[7] = 0x41000000
+     */
+    uint64_t ymm0[4] = {0};
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    TEST_CHECK(ymm0[0] == 0x000000003F800000ULL); /* elem1=0, elem0=loaded */
+    TEST_CHECK(ymm0[1] == 0x0000000040400000ULL); /* elem3=0, elem2=loaded */
+    TEST_CHECK(ymm0[2] == 0x40C0000000000000ULL); /* elem5=loaded, elem4=0 */
+    TEST_CHECK(ymm0[3] == 0x4100000000000000ULL); /* elem7=loaded, elem6=0 */
+
+    /* Check store result at 0x3000:
+     * Element 0: mask bit31=0 (0x00000000) -> not stored (0)
+     * Element 1: mask bit31=1 (0x80000000) -> store ymm3 elem1 = 0xDEADBEEF
+     * Element 2: mask bit31=0 (0x00000000) -> not stored (0)
+     * Element 3: mask bit31=1 (0xF0000000) -> store ymm3 elem3 = 0x12345678
+     * Element 4: mask bit31=1 (0x80000000) -> store ymm3 elem4 = 0xBBBBBBBB
+     * Element 5: mask bit31=0 (0x00000000) -> not stored (0)
+     * Element 6: mask bit31=1 (0xC0000000) -> store ymm3 elem6 = 0xDDDDDDDD
+     * Element 7: mask bit31=0 (0x00000000) -> not stored (0)
+     */
+    uint32_t store_result[8] = {0};
+    OK(uc_mem_read(uc, 0x3000, store_result, sizeof(store_result)));
+    TEST_CHECK(store_result[0] == 0x00000000); /* not stored */
+    TEST_CHECK(store_result[1] == 0xDEADBEEF); /* stored */
+    TEST_CHECK(store_result[2] == 0x00000000); /* not stored */
+    TEST_CHECK(store_result[3] == 0x12345678); /* stored */
+    TEST_CHECK(store_result[4] == 0xBBBBBBBB); /* stored */
+    TEST_CHECK(store_result[5] == 0x00000000); /* not stored */
+    TEST_CHECK(store_result[6] == 0xDDDDDDDD); /* stored */
+    TEST_CHECK(store_result[7] == 0x00000000); /* not stored */
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vblendps_ymm(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vblendps ymm0, ymm1, ymm2, 0xA5  (imm8=10100101b)
+     *
+     * C4 E3 75 0C C2 A5
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=0C, modrm=C2 (mod=3, reg=0, rm=2)
+     *   imm8=0xA5 (bits: 1,0,1,0,0,1,0,1)
+     *
+     * For each dword element i:
+     *   if bit i of imm8 is 1: result[i] = ymm2[i]
+     *   else: result[i] = ymm1[i]
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x75', '\x0C', '\xC2', '\xA5'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = 0x11111111 per dword */
+    uint64_t ymm1[4] = { 0x1111111111111111ULL, 0x1111111111111111ULL,
+                          0x1111111111111111ULL, 0x1111111111111111ULL };
+    /* ymm2 = 0x22222222 per dword */
+    uint64_t ymm2[4] = { 0x2222222222222222ULL, 0x2222222222222222ULL,
+                          0x2222222222222222ULL, 0x2222222222222222ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    /* imm8=0xA5=10100101b
+     * elem0: bit0=1 -> ymm2 = 0x22222222
+     * elem1: bit1=0 -> ymm1 = 0x11111111
+     * elem2: bit2=1 -> ymm2 = 0x22222222
+     * elem3: bit3=0 -> ymm1 = 0x11111111
+     * elem4: bit4=0 -> ymm1 = 0x11111111
+     * elem5: bit5=1 -> ymm2 = 0x22222222
+     * elem6: bit6=0 -> ymm1 = 0x11111111
+     * elem7: bit7=1 -> ymm2 = 0x22222222
+     */
+    uint64_t ymm0[4] = {0};
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    TEST_CHECK(ymm0[0] == 0x1111111122222222ULL); /* elem1=ymm1, elem0=ymm2 */
+    TEST_CHECK(ymm0[1] == 0x1111111122222222ULL); /* elem3=ymm1, elem2=ymm2 */
+    TEST_CHECK(ymm0[2] == 0x2222222211111111ULL); /* elem5=ymm2, elem4=ymm1 */
+    TEST_CHECK(ymm0[3] == 0x2222222211111111ULL); /* elem7=ymm2, elem6=ymm1 */
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vpalignr_ymm(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vpalignr ymm0, ymm1, ymm2, 4  (shift by 4 bytes per lane)
+     *
+     * C4 E3 75 0F C2 04
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=0F, modrm=C2 (mod=3, reg=0, rm=2)
+     *   imm8=4 (shift 4 bytes)
+     *
+     * Per-lane: concatenate [ymm1, ymm2] (256-bit per lane), shift right by 4 bytes
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x75', '\x0F', '\xC2', '\x04'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 (high part of concat):
+     * lane0 bytes 0-15: AA AA AA AA BB BB BB BB CC CC CC CC DD DD DD DD
+     * lane1 bytes 16-31: EE EE EE EE FF FF FF FF 00 11 22 33 44 55 66 77 */
+    uint64_t ymm1[4] = { 0xBBBBBBBBAAAAAAAAULL, 0xDDDDDDDDCCCCCCCCULL,
+                          0xFFFFFFFFEEEEEEEEULL, 0x4455667700112233ULL };
+    /* ymm2 (low part of concat):
+     * lane0 bytes 0-15: 11 11 11 11 22 22 22 22 33 33 33 33 44 44 44 44
+     * lane1 bytes 16-31: 55 55 55 55 66 66 66 66 77 77 77 77 88 88 88 88 */
+    uint64_t ymm2[4] = { 0x2222222211111111ULL, 0x4444444433333333ULL,
+                          0x6666666655555555ULL, 0x8888888877777777ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    /* palignr shift=4 bytes: per lane, concat [ymm1_lane, ymm2_lane] as
+     * bytes [31..16|15..0] and shift right by 4 bytes.
+     * Lane 0: [DDDDDDDD CCCCCCCC BBBBBBBB AAAAAAAA | 44444444 33333333 22222222 11111111]
+     *   shifted right 4 bytes:
+     *   [00000000 DDDDDDDD CCCCCCCC BBBBBBBB | AAAAAAAA 44444444 33333333 22222222]
+     *   result lane0 = AAAAAAAA 44444444 33333333 22222222
+     *   Wait, let me re-think. palignr concatenates as [d:s] (d=ymm1, s=ymm2) then shifts right.
+     *   So: [ymm1_lane | ymm2_lane] = 256-bit, shift right by 4 bytes = 32 bits.
+     *   Lane 0 Q(0) and Q(1):
+     *     Concat: ymm1_lane = Q(1):Q(0) = DDDDDDDDCCCCCCCC:BBBBBBBBAAAAAAAA
+     *             ymm2_lane = Q(1):Q(0) = 4444444433333333:2222222211111111
+     *     As 256-bit: DDDDDDDDCCCCCCCC BBBBBBBBAAAAAAAA 4444444433333333 2222222211111111
+     *     Shift right 32 bits:
+     *     00000000DDDDDDDD CCCCCCCCBBBBBBBB AAAAAAAA44444444 3333333322222222
+     *     But palignr only returns 128-bit result (lower half of shifted):
+     *     Result Q(1):Q(0) = AAAAAAAA44444444:3333333322222222
+     *
+     * Lane 1:
+     *     ymm1_lane1 = Q(3):Q(2) = 4455667700112233:FFFFFFFFEEEEEEEE
+     *     ymm2_lane1 = Q(3):Q(2) = 8888888877777777:6666666655555555
+     *     Shift right 32 bits:
+     *     Result Q(3):Q(2) = EEEEEEEE88888888:7777777766666666
+     */
+    uint64_t ymm0[4] = {0};
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    TEST_CHECK(ymm0[0] == 0x3333333322222222ULL);
+    TEST_CHECK(ymm0[1] == 0xAAAAAAAA44444444ULL);
+    TEST_CHECK(ymm0[2] == 0x7777777766666666ULL);
+    TEST_CHECK(ymm0[3] == 0xEEEEEEEE88888888ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vblendvps(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vblendvps ymm0, ymm1, ymm2, ymm3
+     *   Blend dwords from ymm2 into ymm1 based on sign bits of ymm3.
+     *   If ymm3 dword sign bit=1, take from ymm2; else take from ymm1.
+     *
+     * C4 E3 75 4A C2 30
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=4A, modrm=C2 (mod=3, reg=0, rm=2)
+     *   imm8=0x30 (is4=3 -> ymm3 for mask)
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x75', '\x4A', '\xC2', '\x30'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = all 0x11111111 per dword */
+    uint64_t ymm1[4] = { 0x1111111111111111ULL, 0x1111111111111111ULL,
+                          0x1111111111111111ULL, 0x1111111111111111ULL };
+    /* ymm2 = all 0x22222222 per dword */
+    uint64_t ymm2[4] = { 0x2222222222222222ULL, 0x2222222222222222ULL,
+                          0x2222222222222222ULL, 0x2222222222222222ULL };
+    /* ymm3 mask: dword sign bits: 1,0,1,0, 0,1,0,1 (alternating) */
+    uint64_t ymm3[4] = { 0x00000000FFFFFFFFULL, 0x00000000FFFFFFFFULL,
+                          0x00000000FFFFFFFFULL, 0x00000000FFFFFFFFULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM3, ymm3));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* dword[0]=mask 0xFFFFFFFF (sign=1) -> from ymm2 = 0x22222222
+     * dword[1]=mask 0x00000000 (sign=0) -> from ymm1 = 0x11111111 */
+    TEST_CHECK(ymm0[0] == 0x1111111122222222ULL);
+    TEST_CHECK(ymm0[1] == 0x1111111122222222ULL);
+    TEST_CHECK(ymm0[2] == 0x1111111122222222ULL);
+    TEST_CHECK(ymm0[3] == 0x1111111122222222ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vblendvpd(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vblendvpd ymm0, ymm1, ymm2, ymm3
+     *   Blend qwords from ymm2 into ymm1 based on sign bits of ymm3.
+     *
+     * C4 E3 75 4B C2 30
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=4B, modrm=C2 (mod=3, reg=0, rm=2)
+     *   imm8=0x30 (is4=3 -> ymm3)
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x75', '\x4B', '\xC2', '\x30'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = {AAAA, BBBB, CCCC, DDDD} */
+    uint64_t ymm1[4] = { 0xAAAAAAAAAAAAAAAAULL, 0xBBBBBBBBBBBBBBBBULL,
+                          0xCCCCCCCCCCCCCCCCULL, 0xDDDDDDDDDDDDDDDDULL };
+    /* ymm2 = {1111, 2222, 3333, 4444} */
+    uint64_t ymm2[4] = { 0x1111111111111111ULL, 0x2222222222222222ULL,
+                          0x3333333333333333ULL, 0x4444444444444444ULL };
+    /* ymm3 mask: qword[0] sign=1, [1] sign=0, [2] sign=1, [3] sign=0 */
+    uint64_t ymm3[4] = { 0x8000000000000000ULL, 0x0000000000000000ULL,
+                          0xFFFFFFFFFFFFFFFFULL, 0x7FFFFFFFFFFFFFFFULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM3, ymm3));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* qword[0]: mask sign=1 -> from ymm2 = 0x1111111111111111 */
+    TEST_CHECK(ymm0[0] == 0x1111111111111111ULL);
+    /* qword[1]: mask sign=0 -> from ymm1 = 0xBBBBBBBBBBBBBBBB */
+    TEST_CHECK(ymm0[1] == 0xBBBBBBBBBBBBBBBBULL);
+    /* qword[2]: mask sign=1 -> from ymm2 = 0x3333333333333333 */
+    TEST_CHECK(ymm0[2] == 0x3333333333333333ULL);
+    /* qword[3]: mask sign=0 -> from ymm1 = 0xDDDDDDDDDDDDDDDD */
+    TEST_CHECK(ymm0[3] == 0xDDDDDDDDDDDDDDDDULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vpblendvb(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpblendvb ymm0, ymm1, ymm2, ymm3
+     *   Blend bytes from ymm2 into ymm1 based on high bit of each byte in ymm3.
+     *
+     * C4 E3 75 4C C2 30
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=4C, modrm=C2 (mod=3, reg=0, rm=2)
+     *   imm8=0x30 (is4=3 -> ymm3)
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x75', '\x4C', '\xC2', '\x30'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = all 0xAA bytes */
+    uint64_t ymm1[4] = { 0xAAAAAAAAAAAAAAAAULL, 0xAAAAAAAAAAAAAAAAULL,
+                          0xAAAAAAAAAAAAAAAAULL, 0xAAAAAAAAAAAAAAAAULL };
+    /* ymm2 = all 0x55 bytes */
+    uint64_t ymm2[4] = { 0x5555555555555555ULL, 0x5555555555555555ULL,
+                          0x5555555555555555ULL, 0x5555555555555555ULL };
+    /* ymm3 mask: alternating 0xFF(sign=1)/0x00(sign=0) per byte */
+    uint64_t ymm3[4] = { 0x00FF00FF00FF00FFULL, 0x00FF00FF00FF00FFULL,
+                          0x00FF00FF00FF00FFULL, 0x00FF00FF00FF00FFULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM3, ymm3));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* byte[0]: mask 0xFF (sign=1) -> from ymm2 = 0x55
+     * byte[1]: mask 0x00 (sign=0) -> from ymm1 = 0xAA
+     * Pattern: 0xAA55AA55... */
+    TEST_CHECK(ymm0[0] == 0xAA55AA55AA55AA55ULL);
+    TEST_CHECK(ymm0[1] == 0xAA55AA55AA55AA55ULL);
+    TEST_CHECK(ymm0[2] == 0xAA55AA55AA55AA55ULL);
+    TEST_CHECK(ymm0[3] == 0xAA55AA55AA55AA55ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vpmovsxbw_ymm(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpmovsxbw ymm0, xmm1
+     *   Sign-extend 16 bytes from xmm1 into 16 words in ymm0.
+     *
+     * C4 E2 7D 20 C1
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   vvvv=1111 (unused for 2-op)
+     *   opcode=20, modrm=C1 (mod=3, reg=0, rm=1)
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x7D', '\x20', '\xC1'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* xmm1 = 16 bytes: 0x01, 0xFF, 0x02, 0xFE, 0x03, 0xFD, 0x04, 0xFC,
+     *                   0x05, 0xFB, 0x06, 0xFA, 0x07, 0xF9, 0x08, 0xF8
+     * (little-endian qwords) */
+    uint64_t xmm1[2] = { 0xFC04FD03FE02FF01ULL, 0xF808F907FA06FB05ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* Byte 0x01 -> word 0x0001, 0xFF -> 0xFFFF, 0x02 -> 0x0002, 0xFE -> 0xFFFE */
+    TEST_CHECK(ymm0[0] == 0xFFFE0002FFFF0001ULL);
+    /* 0x03 -> 0x0003, 0xFD -> 0xFFFD, 0x04 -> 0x0004, 0xFC -> 0xFFFC */
+    TEST_CHECK(ymm0[1] == 0xFFFC0004FFFD0003ULL);
+    /* 0x05 -> 0x0005, 0xFB -> 0xFFFB, 0x06 -> 0x0006, 0xFA -> 0xFFFA */
+    TEST_CHECK(ymm0[2] == 0xFFFA0006FFFB0005ULL);
+    /* 0x07 -> 0x0007, 0xF9 -> 0xFFF9, 0x08 -> 0x0008, 0xF8 -> 0xFFF8 */
+    TEST_CHECK(ymm0[3] == 0xFFF80008FFF90007ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vpmovzxbd_ymm(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpmovzxbd ymm0, xmm1
+     *   Zero-extend 8 bytes from xmm1 into 8 dwords in ymm0.
+     *
+     * C4 E2 7D 31 C1
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   vvvv=1111 (unused)
+     *   opcode=31, modrm=C1 (mod=3, reg=0, rm=1)
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x7D', '\x31', '\xC1'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* xmm1 lower 64 bits = 8 bytes: 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 */
+    uint64_t xmm1[2] = { 0x8877665544332211ULL, 0 };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* byte 0x11 -> dword 0x00000011, 0x22 -> 0x00000022, etc. */
+    TEST_CHECK(ymm0[0] == 0x0000002200000011ULL);
+    TEST_CHECK(ymm0[1] == 0x0000004400000033ULL);
+    TEST_CHECK(ymm0[2] == 0x0000006600000055ULL);
+    TEST_CHECK(ymm0[3] == 0x0000008800000077ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx2_vpbroadcastd(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpbroadcastd ymm0, xmm1
+     *   Broadcast dword[0] of xmm1 to all dwords in ymm0.
+     *
+     * C4 E2 7D 58 C1
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   vvvv=1111 (unused)
+     *   opcode=58, modrm=C1 (mod=3, reg=0, rm=1)
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x7D', '\x58', '\xC1'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    uint64_t xmm1[2] = { 0xDEADBEEF12345678ULL, 0 };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* dword[0] = 0x12345678 broadcast to all 8 dwords */
+    TEST_CHECK(ymm0[0] == 0x1234567812345678ULL);
+    TEST_CHECK(ymm0[1] == 0x1234567812345678ULL);
+    TEST_CHECK(ymm0[2] == 0x1234567812345678ULL);
+    TEST_CHECK(ymm0[3] == 0x1234567812345678ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx2_vperm2i128(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vperm2i128 ymm0, ymm1, ymm2, 0x31
+     *   Same as vperm2f128 but integer domain (AVX2).
+     *
+     * C4 E3 75 46 C2 31
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=0
+     *   vvvv=~1=0b1110 -> ymm1
+     *   opcode=46, modrm=C2 (mod=3, reg=0, rm=2)
+     *   imm8=0x31
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x75', '\x46', '\xC2', '\x31'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    uint64_t ymm1[4] = { 0x1111111122222222ULL, 0x3333333344444444ULL,
+                          0xAAAAAAAABBBBBBBBULL, 0xCCCCCCCCDDDDDDDDULL };
+    uint64_t ymm2[4] = { 0x5555555566666666ULL, 0x7777777788888888ULL,
+                          0xEEEEEEEEFFFFFFFFULL, 0x9999999900000000ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* imm8=0x31: low=src1 lane 1, high=src2 lane 1 */
+    TEST_CHECK(ymm0[0] == 0xAAAAAAAABBBBBBBBULL);
+    TEST_CHECK(ymm0[1] == 0xCCCCCCCCDDDDDDDDULL);
+    TEST_CHECK(ymm0[2] == 0xEEEEEEEEFFFFFFFFULL);
+    TEST_CHECK(ymm0[3] == 0x9999999900000000ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx2_vpermd(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpermd ymm0, ymm1, ymm2
+     *   Permute dwords in ymm2 using indices in ymm1, store in ymm0.
+     *
+     * C4 E2 75 36 C2
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   vvvv=~1=0b1110 -> ymm1 (index)
+     *   opcode=36, modrm=C2 (mod=3, reg=0, rm=2) -> dest=ymm0, src=ymm2
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x75', '\x36', '\xC2'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm2 = source data: dwords 0x10,0x20,...,0x80 */
+    uint64_t ymm2[4] = {
+        0x0000002000000010ULL,  /* dword[1]=0x20, dword[0]=0x10 */
+        0x0000004000000030ULL,  /* dword[3]=0x40, dword[2]=0x30 */
+        0x0000006000000050ULL,  /* dword[5]=0x60, dword[4]=0x50 */
+        0x0000008000000070ULL   /* dword[7]=0x80, dword[6]=0x70 */
+    };
+    /* ymm1 = index vector: pick dwords in reverse order (7,6,5,4,3,2,1,0) */
+    uint64_t ymm1[4] = {
+        0x0000000600000007ULL,  /* idx[1]=6, idx[0]=7 */
+        0x0000000400000005ULL,  /* idx[3]=4, idx[2]=5 */
+        0x0000000200000003ULL,  /* idx[5]=2, idx[4]=3 */
+        0x0000000000000001ULL   /* idx[7]=0, idx[6]=1 */
+    };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* Result: reversed dwords: 0x80,0x70,0x60,0x50,0x40,0x30,0x20,0x10 */
+    TEST_CHECK(ymm0[0] == 0x0000007000000080ULL);
+    TEST_CHECK(ymm0[1] == 0x0000005000000060ULL);
+    TEST_CHECK(ymm0[2] == 0x0000003000000040ULL);
+    TEST_CHECK(ymm0[3] == 0x0000001000000020ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx2_vpermq(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpermq ymm0, ymm1, 0x1B
+     *   Permute qwords in ymm1 using imm8=0x1B (00_01_10_11 = 0,1,2,3 reversed)
+     *   Result: q[0]=q[3], q[1]=q[2], q[2]=q[1], q[3]=q[0]
+     *
+     * C4 E3 FD 00 C1 1B
+     *   VEX.256, pp=01(66), mmmmm=00011(0F3A), W=1
+     *   vvvv=1111 (unused)
+     *   opcode=00, modrm=C1 (mod=3, reg=0, rm=1)
+     *   imm8=0x1B
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\xFD', '\x00', '\xC1', '\x1B'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = source: qwords 0xAA, 0xBB, 0xCC, 0xDD */
+    uint64_t ymm1[4] = { 0xAAULL, 0xBBULL, 0xCCULL, 0xDDULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* imm8=0x1B: q[0]=src[3]=0xDD, q[1]=src[2]=0xCC, q[2]=src[1]=0xBB, q[3]=src[0]=0xAA */
+    TEST_CHECK(ymm0[0] == 0xDDULL);
+    TEST_CHECK(ymm0[1] == 0xCCULL);
+    TEST_CHECK(ymm0[2] == 0xBBULL);
+    TEST_CHECK(ymm0[3] == 0xAAULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx2_vpsllvd(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpsllvd ymm0, ymm1, ymm2
+     *   Variable left shift each dword in ymm1 by corresponding count in ymm2.
+     *
+     * C4 E2 75 47 C2
+     *   VEX.256, pp=01(66), mmmmm=00010(0F38), W=0
+     *   vvvv=~1=0b1110 -> ymm1 (data)
+     *   opcode=47, modrm=C2 (mod=3, reg=0, rm=2) -> dest=ymm0, counts=ymm2
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x75', '\x47', '\xC2'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 = data: all dwords = 0x00000001 */
+    uint64_t ymm1[4] = {
+        0x0000000100000001ULL,
+        0x0000000100000001ULL,
+        0x0000000100000001ULL,
+        0x0000000100000001ULL
+    };
+    /* ymm2 = shift counts: 0,1,2,3,4,8,16,32 */
+    uint64_t ymm2[4] = {
+        0x0000000100000000ULL,  /* count[0]=0, count[1]=1 */
+        0x0000000300000002ULL,  /* count[2]=2, count[3]=3 */
+        0x0000000800000004ULL,  /* count[4]=4, count[5]=8 */
+        0x0000002000000010ULL   /* count[6]=16, count[7]=32 */
+    };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /* 1<<0=1, 1<<1=2, 1<<2=4, 1<<3=8, 1<<4=16, 1<<8=256, 1<<16=65536, 1<<32=0 */
+    TEST_CHECK(ymm0[0] == 0x0000000200000001ULL);
+    TEST_CHECK(ymm0[1] == 0x0000000800000004ULL);
+    TEST_CHECK(ymm0[2] == 0x0000010000000010ULL);
+    TEST_CHECK(ymm0[3] == 0x0000000000010000ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx2_vpacksswb_ymm(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4] = {0};
+
+    /*
+     * vpacksswb ymm0, ymm1, ymm2
+     *   Per-lane: pack words from ymm1 and ymm2 into signed bytes.
+     *   Lane 0: pack ymm1[0:7] then ymm2[0:7] into bytes 0-15
+     *   Lane 1: pack ymm1[8:15] then ymm2[8:15] into bytes 16-31
+     *
+     * C5 F5 63 C2 = VEX.256.66.0F 63 /r
+     *   VEX.256, pp=01(66), map=0F, W=0
+     *   vvvv=~1 -> ymm1, modrm=C2 (mod=3, reg=0, rm=2)
+     */
+    char code[] = {
+        '\xC5', '\xF5', '\x63', '\xC2'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1 (d): lane0 words = 1,2,3,4,5,6,7,8; lane1 = 0x100 repeated (clamp) */
+    uint64_t ymm1[4] = {
+        0x0002000100040003ULL,  /* W(3)=2, W(2)=1, W(1)=4, W(0)=3 -- wait */
+        0x0006000500080007ULL,
+        0x0100010001000100ULL,  /* 256 -> clamps to 127 */
+        0x0100010001000100ULL
+    };
+    /* Actually, let me use simpler values. Words in memory order:
+     * ymm1 W(0)=1, W(1)=2, ..., W(7)=8 for lane 0
+     * ymm1 W(8)=0x100, all lane1 words = 0x100 (saturates to 0x7F)
+     */
+    ymm1[0] = 0x0002000100040003ULL; /* In little-endian: W(0)=3, W(1)=4, W(2)=1, W(3)=2 */
+    /* Let me use very clear values instead */
+    ymm1[0] = (uint64_t)0x0001 | ((uint64_t)0x0002 << 16) |
+              ((uint64_t)0x0003 << 32) | ((uint64_t)0x0004 << 48);
+    ymm1[1] = (uint64_t)0x0005 | ((uint64_t)0x0006 << 16) |
+              ((uint64_t)0x0007 << 32) | ((uint64_t)0x0008 << 48);
+    ymm1[2] = (uint64_t)0x0100 | ((uint64_t)0x0100 << 16) |
+              ((uint64_t)0x0100 << 32) | ((uint64_t)0x0100 << 48);
+    ymm1[3] = (uint64_t)0x0100 | ((uint64_t)0x0100 << 16) |
+              ((uint64_t)0x0100 << 32) | ((uint64_t)0x0100 << 48);
+
+    /* ymm2 (s): lane0 words = 0x10..0x17; lane1 = 0xFF00 repeated (clamps to -128=0x80) */
+    uint64_t ymm2[4];
+    ymm2[0] = (uint64_t)0x0010 | ((uint64_t)0x0011 << 16) |
+              ((uint64_t)0x0012 << 32) | ((uint64_t)0x0013 << 48);
+    ymm2[1] = (uint64_t)0x0014 | ((uint64_t)0x0015 << 16) |
+              ((uint64_t)0x0016 << 32) | ((uint64_t)0x0017 << 48);
+    ymm2[2] = (uint64_t)0xFF00 | ((uint64_t)0xFF00 << 16) |
+              ((uint64_t)0xFF00 << 32) | ((uint64_t)0xFF00 << 48);
+    ymm2[3] = (uint64_t)0xFF00 | ((uint64_t)0xFF00 << 16) |
+              ((uint64_t)0xFF00 << 32) | ((uint64_t)0xFF00 << 48);
+
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0));
+    /*
+     * Per-lane result:
+     * Lane 0 bytes 0-7: satsb(d lane0) = 1,2,3,4,5,6,7,8
+     * Lane 0 bytes 8-15: satsb(s lane0) = 0x10..0x17
+     * Lane 1 bytes 16-23: satsb(d lane1) = 0x7F * 8 (0x100 clamps to 127)
+     * Lane 1 bytes 24-31: satsb(s lane1) = 0x80 * 8 (0xFF00=-256 clamps to -128)
+     */
+    TEST_CHECK(ymm0[0] == 0x0807060504030201ULL);
+    TEST_CHECK(ymm0[1] == 0x1716151413121110ULL);
+    TEST_CHECK(ymm0[2] == 0x7F7F7F7F7F7F7F7FULL);
+    TEST_CHECK(ymm0[3] == 0x8080808080808080ULL);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx2_vpgatherdd(void)
+{
+    uc_engine *uc;
+    uint64_t xmm0[2] = {0};
+
+    /*
+     * vpgatherdd xmm0, [rcx + xmm2*4], xmm1
+     *   Gather dwords from memory using dword indices in xmm2.
+     *   For each element i where mask xmm1[i] MSB is set:
+     *     xmm0[i] = mem[rcx + xmm2[i]*4]
+     *   After: xmm1 is zeroed.
+     *
+     * Encoding: C4 E2 71 90 04 91
+     *   C4 = 3-byte VEX prefix
+     *   E2 = ~R=1 ~X=1 ~B=1 mmmmm=00010 (0F38)
+     *   71 = W=0 ~vvvv=0111->vvvv=1000... wait
+     *
+     * Let me use: vpgatherdd xmm0, [rcx + xmm2*4], xmm1
+     *   VEX.128.66.0F38.W0 90 /vsib
+     *   dest=xmm0 (modrm.reg=0), mask=xmm1 (vvvv=1), index=xmm2 (SIB.index=2)
+     *   base=rcx (SIB.base=1), scale=4 (SIB.ss=10)
+     *
+     *   3-byte VEX: C4 [RXBmmmmm] [WvvvvLpp]
+     *   R=1,X=1,B=1 -> ~R=0,~X=0,~B=0 -> first byte = 11100010 = E2
+     *   W=0, vvvv=~1=1110, L=0, pp=01 -> 01110001 = 71
+     *   opcode=90
+     *   modrm: mod=00, reg=000, rm=100(SIB) -> 00000100 = 04
+     *   SIB: ss=10, index=010, base=001 -> 10010001 = 91
+     */
+    char code[] = {
+        '\xC4', '\xE2', '\x71', '\x90', '\x04', '\x91'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* Set up a dword array at address 0x2000: [10, 20, 30, 40, 50, 60, 70, 80] */
+    uint32_t data[] = { 10, 20, 30, 40, 50, 60, 70, 80 };
+    OK(uc_mem_write(uc, 0x2000, data, sizeof(data)));
+
+    /* rcx = base address = 0x2000 */
+    uint64_t rcx = 0x2000;
+    OK(uc_reg_write(uc, UC_X86_REG_RCX, &rcx));
+
+    /* xmm2 = index vector: [2, 0, 5, 7] (gather data[2], data[0], data[5], data[7]) */
+    uint64_t xmm2[2] = {
+        (uint64_t)2 | ((uint64_t)0 << 32),     /* idx[0]=2, idx[1]=0 */
+        (uint64_t)5 | ((uint64_t)7 << 32)      /* idx[2]=5, idx[3]=7 */
+    };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, xmm2));
+
+    /* xmm1 = mask: all MSBs set (all elements active) */
+    uint64_t xmm1[2] = { 0x8000000080000000ULL, 0x8000000080000000ULL };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1));
+
+    /* xmm0 = initial dest (should be overwritten) */
+    uint64_t xmm0_init[2] = { 0xDEADDEADDEADDEADULL, 0xDEADDEADDEADDEADULL };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0_init));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, xmm0));
+    /* Result: data[2]=30, data[0]=10, data[5]=60, data[7]=80 */
+    TEST_CHECK((uint32_t)(xmm0[0]) == 30);
+    TEST_CHECK((uint32_t)(xmm0[0] >> 32) == 10);
+    TEST_CHECK((uint32_t)(xmm0[1]) == 60);
+    TEST_CHECK((uint32_t)(xmm0[1] >> 32) == 80);
+
+    /* Mask should be zeroed */
+    uint64_t mask_result[2] = {0};
+    OK(uc_reg_read(uc, UC_X86_REG_XMM1, mask_result));
+    TEST_CHECK(mask_result[0] == 0);
+    TEST_CHECK(mask_result[1] == 0);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vroundss(void)
+{
+    uc_engine *uc;
+    uint64_t xmm0[2] = {0};
+
+    /*
+     * vroundss xmm0, xmm1, xmm2, 1
+     *   Round xmm2[0] toward -inf, copy xmm1 upper elements to xmm0.
+     *
+     * C4 E3 71 0A C2 01
+     *   VEX.128.66.0F3A.WIG 0A /r ib
+     *   vvvv=~1=1110 -> xmm1, reg=0 (dest=xmm0), rm=2 (src=xmm2)
+     *   imm8=0x01 (round toward -inf)
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x71', '\x0A', '\xC2', '\x01'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* xmm1: upper elements should be preserved */
+    float f1_vals[4] = { 99.0f, 1.0f, 2.0f, 3.0f };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, f1_vals));
+
+    /* xmm2: element 0 = 2.7f (should round to 2.0 toward -inf) */
+    float f2_vals[4] = { 2.7f, 0.0f, 0.0f, 0.0f };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, f2_vals));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float result[4];
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, result));
+    /* element 0: floor(2.7) = 2.0, elements 1-3: from xmm1 (1.0, 2.0, 3.0) */
+    TEST_CHECK(result[0] == 2.0f);
+    TEST_CHECK(result[1] == 1.0f);
+    TEST_CHECK(result[2] == 2.0f);
+    TEST_CHECK(result[3] == 3.0f);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx2_vpblendd(void)
+{
+    uc_engine *uc;
+    uint64_t xmm0[2] = {0};
+
+    /*
+     * vpblendd xmm0, xmm1, xmm2, 0x05
+     *   Blend: bits 0,2 from xmm2 (mask=0101), bits 1,3 from xmm1.
+     *
+     * C4 E3 71 02 C2 05
+     *   VEX.128.66.0F3A.W0 02 /r ib
+     *   vvvv=~1=1110 -> xmm1, modrm=C2 (reg=0, rm=2), imm8=0x05
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x71', '\x02', '\xC2', '\x05'
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    uint64_t xmm1[2] = { 0x1111111122222222ULL, 0x3333333344444444ULL };
+    uint64_t xmm2[2] = { 0xAAAAAAAABBBBBBBBULL, 0xCCCCCCCCDDDDDDDDULL };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, xmm2));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, xmm0));
+    /* imm8=0x05 = 0b0101: dword[0] from xmm2, dword[1] from xmm1,
+     * dword[2] from xmm2, dword[3] from xmm1 */
+    TEST_CHECK((uint32_t)(xmm0[0]) == 0xBBBBBBBBU);       /* dword[0] from xmm2 */
+    TEST_CHECK((uint32_t)(xmm0[0] >> 32) == 0x11111111U);  /* dword[1] from xmm1 */
+    TEST_CHECK((uint32_t)(xmm0[1]) == 0xDDDDDDDDU);        /* dword[2] from xmm2 */
+    TEST_CHECK((uint32_t)(xmm0[1] >> 32) == 0x33333333U);  /* dword[3] from xmm1 */
+
+    OK(uc_close(uc));
+}
+
+/* Test VFMADD231PS xmm0, xmm1, xmm2:
+ * xmm0 = xmm1 * xmm2 + xmm0
+ * With xmm0={1,1,1,1}, xmm1={2,3,4,5}, xmm2={10,10,10,10}
+ * Result: {2*10+1, 3*10+1, 4*10+1, 5*10+1} = {21,31,41,51}
+ */
+static void test_x86_fma_vfmadd231ps(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vfmadd231ps xmm0, xmm1, xmm2
+     * VEX.128.66.0F38.W0 B8 /r
+     * C4 E2 71 B8 C2
+     */
+    char code[] = { '\xC4', '\xE2', '\x71', '\xB8', '\xC2' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    float xmm0_in[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float xmm1_in[4] = { 2.0f, 3.0f, 4.0f, 5.0f };
+    float xmm2_in[4] = { 10.0f, 10.0f, 10.0f, 10.0f };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, xmm2_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float xmm0_out[4];
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, xmm0_out));
+    /* xmm0 = xmm1 * xmm2 + xmm0 = {21, 31, 41, 51} */
+    TEST_CHECK(xmm0_out[0] == 21.0f);
+    TEST_CHECK(xmm0_out[1] == 31.0f);
+    TEST_CHECK(xmm0_out[2] == 41.0f);
+    TEST_CHECK(xmm0_out[3] == 51.0f);
+
+    OK(uc_close(uc));
+}
+
+/* Test VFNMSUB213SD xmm0, xmm1, xmm2:
+ * xmm0[0] = -(xmm1[0] * xmm0[0]) - xmm2[0]
+ * With xmm0={3.0,99.0}, xmm1={4.0,99.0}, xmm2={5.0,99.0}
+ * Result[0] = -(4*3) - 5 = -17.0, Result[1] = 99.0 (unchanged)
+ */
+static void test_x86_fma_vfnmsub213sd(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vfnmsub213sd xmm0, xmm1, xmm2
+     * VEX.LIG.66.0F38.W1 AF /r
+     * C4 E2 F1 AF C2
+     */
+    char code[] = { '\xC4', '\xE2', '\xF1', '\xAF', '\xC2' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    double xmm0_in[2] = { 3.0, 99.0 };
+    double xmm1_in[2] = { 4.0, 99.0 };
+    double xmm2_in[2] = { 5.0, 99.0 };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, xmm2_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    double xmm0_out[2];
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, xmm0_out));
+    /* 213 form: result = -(vvvv * dest) - src = -(4*3) - 5 = -17 */
+    TEST_CHECK(xmm0_out[0] == -17.0);
+    TEST_CHECK(xmm0_out[1] == 99.0);
+
+    OK(uc_close(uc));
+}
+
+/* Test VCVTPS2PH and VCVTPH2PS round-trip */
+static void test_x86_f16c(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vcvtps2ph xmm1, xmm0, 0   ; convert 4 floats to 4 half-floats
+     * VEX.128.66.0F3A.W0 1D /r ib
+     * C4 E3 79 1D C1 00
+     *
+     * vcvtph2ps xmm2, xmm1       ; convert 4 half-floats back to 4 floats
+     * VEX.128.66.0F38.W0 13 /r
+     * C4 E2 79 13 D1
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x79', '\x1D', '\xC1', '\x00',  /* vcvtps2ph xmm1, xmm0, 0 */
+        '\xC4', '\xE2', '\x79', '\x13', '\xD1'            /* vcvtph2ps xmm2, xmm1 */
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    float xmm0_in[4] = { 1.0f, 2.0f, -0.5f, 65504.0f };  /* values representable in float16 */
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float xmm2_out[4];
+    OK(uc_reg_read(uc, UC_X86_REG_XMM2, xmm2_out));
+    /* Round-trip should preserve these values exactly */
+    TEST_CHECK(xmm2_out[0] == 1.0f);
+    TEST_CHECK(xmm2_out[1] == 2.0f);
+    TEST_CHECK(xmm2_out[2] == -0.5f);
+    TEST_CHECK(xmm2_out[3] == 65504.0f);
+
+    OK(uc_close(uc));
+}
+
+/* Test VPHADDW ymm0, ymm1, ymm2 (per-lane horizontal add) */
+static void test_x86_avx2_vphaddw_ymm(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vphaddw ymm0, ymm1, ymm2
+     * VEX.256.66.0F38.WIG 01 /r  (phaddw)
+     * C4 E2 75 01 C2
+     *   vvvv=~1=1110->ymm1, modrm=C2 (reg=0, rm=2)
+     */
+    char code[] = { '\xC4', '\xE2', '\x75', '\x01', '\xC2' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* ymm1: lane0 words = {1,2,3,4,5,6,7,8}, lane1 = {9,10,11,12,13,14,15,16} */
+    uint16_t ymm1_w[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+    /* ymm2: lane0 words = {10,20,30,40,50,60,70,80}, lane1 = {100,200,300,400,500,600,700,800} */
+    uint16_t ymm2_w[16] = {10,20,30,40,50,60,70,80,100,200,300,400,500,600,700,800};
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1_w));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2_w));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    uint16_t ymm0_out[16];
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0_out));
+    /* Per-lane horizontal add:
+     * Lane 0: hadd(ymm1[0:7]) = {1+2,3+4,5+6,7+8} = {3,7,11,15}
+     *         hadd(ymm2[0:7]) = {10+20,30+40,50+60,70+80} = {30,70,110,150}
+     * Lane 1: hadd(ymm1[8:15]) = {9+10,11+12,13+14,15+16} = {19,23,27,31}
+     *         hadd(ymm2[8:15]) = {100+200,300+400,500+600,700+800} = {300,700,1100,1500}
+     */
+    TEST_CHECK(ymm0_out[0] == 3);
+    TEST_CHECK(ymm0_out[1] == 7);
+    TEST_CHECK(ymm0_out[2] == 11);
+    TEST_CHECK(ymm0_out[3] == 15);
+    TEST_CHECK(ymm0_out[4] == 30);
+    TEST_CHECK(ymm0_out[5] == 70);
+    TEST_CHECK(ymm0_out[6] == 110);
+    TEST_CHECK(ymm0_out[7] == 150);
+    TEST_CHECK(ymm0_out[8] == 19);
+    TEST_CHECK(ymm0_out[9] == 23);
+    TEST_CHECK(ymm0_out[10] == 27);
+    TEST_CHECK(ymm0_out[11] == 31);
+    TEST_CHECK(ymm0_out[12] == 300);
+    TEST_CHECK(ymm0_out[13] == 700);
+    TEST_CHECK(ymm0_out[14] == 1100);
+    TEST_CHECK(ymm0_out[15] == 1500);
+
+    OK(uc_close(uc));
+}
+
+/* Test VFMADD132PS xmm0, xmm1, xmm2 (132 form):
+ * xmm0 = xmm0 * xmm2 + xmm1  (a=reg, b=src, c=vvvv → result = a*b + c)
+ * xmm0={2,3,4,5}, xmm1={100,200,300,400}, xmm2={10,10,10,10}
+ * Result = {2*10+100, 3*10+200, 4*10+300, 5*10+400} = {120,230,340,450}
+ */
+static void test_x86_fma_vfmadd132ps(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vfmadd132ps xmm0, xmm1, xmm2
+     * VEX.128.66.0F38.W0 98 /r
+     * C4 E2 71 98 C2
+     */
+    char code[] = { '\xC4', '\xE2', '\x71', '\x98', '\xC2' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    float xmm0_in[4] = { 2.0f, 3.0f, 4.0f, 5.0f };
+    float xmm1_in[4] = { 100.0f, 200.0f, 300.0f, 400.0f };
+    float xmm2_in[4] = { 10.0f, 10.0f, 10.0f, 10.0f };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, xmm2_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float xmm0_out[4];
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, xmm0_out));
+    /* 132 form: result = reg * src + vvvv = xmm0 * xmm2 + xmm1 */
+    TEST_CHECK(xmm0_out[0] == 120.0f);
+    TEST_CHECK(xmm0_out[1] == 230.0f);
+    TEST_CHECK(xmm0_out[2] == 340.0f);
+    TEST_CHECK(xmm0_out[3] == 450.0f);
+
+    OK(uc_close(uc));
+}
+
+/* Test VFMADD213PS xmm0, xmm1, xmm2 (213 form):
+ * xmm0 = xmm1 * xmm0 + xmm2  (a=vvvv, b=reg, c=src → result = a*b + c)
+ * xmm0={3,4,5,6}, xmm1={10,10,10,10}, xmm2={1,2,3,4}
+ * Result = {10*3+1, 10*4+2, 10*5+3, 10*6+4} = {31,42,53,64}
+ */
+static void test_x86_fma_vfmadd213ps(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vfmadd213ps xmm0, xmm1, xmm2
+     * VEX.128.66.0F38.W0 A8 /r
+     * C4 E2 71 A8 C2
+     */
+    char code[] = { '\xC4', '\xE2', '\x71', '\xA8', '\xC2' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    float xmm0_in[4] = { 3.0f, 4.0f, 5.0f, 6.0f };
+    float xmm1_in[4] = { 10.0f, 10.0f, 10.0f, 10.0f };
+    float xmm2_in[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, xmm2_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float xmm0_out[4];
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, xmm0_out));
+    /* 213 form: result = vvvv * reg + src = xmm1 * xmm0 + xmm2 */
+    TEST_CHECK(xmm0_out[0] == 31.0f);
+    TEST_CHECK(xmm0_out[1] == 42.0f);
+    TEST_CHECK(xmm0_out[2] == 53.0f);
+    TEST_CHECK(xmm0_out[3] == 64.0f);
+
+    OK(uc_close(uc));
+}
+
+/* Test VFMADD231PS ymm (256-bit FMA):
+ * ymm0 = ymm1 * ymm2 + ymm0
+ * ymm0={1,...,1}, ymm1={1,2,...,8}, ymm2={10,...,10}
+ * Result = {11,21,31,41,51,61,71,81}
+ */
+static void test_x86_fma_vfmadd231ps_ymm(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vfmadd231ps ymm0, ymm1, ymm2
+     * VEX.256.66.0F38.W0 B8 /r
+     * C4 E2 75 B8 C2
+     */
+    char code[] = { '\xC4', '\xE2', '\x75', '\xB8', '\xC2' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    float ymm0_in[8] = { 1,1,1,1,1,1,1,1 };
+    float ymm1_in[8] = { 1,2,3,4,5,6,7,8 };
+    float ymm2_in[8] = { 10,10,10,10,10,10,10,10 };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM0, ymm0_in));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM1, ymm1_in));
+    OK(uc_reg_write(uc, UC_X86_REG_YMM2, ymm2_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float ymm0_out[8];
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, ymm0_out));
+    TEST_CHECK(ymm0_out[0] == 11.0f);
+    TEST_CHECK(ymm0_out[1] == 21.0f);
+    TEST_CHECK(ymm0_out[2] == 31.0f);
+    TEST_CHECK(ymm0_out[3] == 41.0f);
+    TEST_CHECK(ymm0_out[4] == 51.0f);
+    TEST_CHECK(ymm0_out[5] == 61.0f);
+    TEST_CHECK(ymm0_out[6] == 71.0f);
+    TEST_CHECK(ymm0_out[7] == 81.0f);
+
+    OK(uc_close(uc));
+}
+
+/* Test VFMADDSUB231PS xmm0, xmm1, xmm2:
+ * Even elements: sub (negate_c), odd elements: add
+ * result[0] = xmm1[0]*xmm2[0] - xmm0[0]
+ * result[1] = xmm1[1]*xmm2[1] + xmm0[1]
+ * result[2] = xmm1[2]*xmm2[2] - xmm0[2]
+ * result[3] = xmm1[3]*xmm2[3] + xmm0[3]
+ * xmm0={1,1,1,1}, xmm1={2,3,4,5}, xmm2={10,10,10,10}
+ * = {20-1, 30+1, 40-1, 50+1} = {19, 31, 39, 51}
+ */
+static void test_x86_fma_vfmaddsub231ps(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vfmaddsub231ps xmm0, xmm1, xmm2
+     * VEX.128.66.0F38.W0 B6 /r
+     * C4 E2 71 B6 C2
+     */
+    char code[] = { '\xC4', '\xE2', '\x71', '\xB6', '\xC2' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    float xmm0_in[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float xmm1_in[4] = { 2.0f, 3.0f, 4.0f, 5.0f };
+    float xmm2_in[4] = { 10.0f, 10.0f, 10.0f, 10.0f };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, xmm2_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float xmm0_out[4];
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, xmm0_out));
+    /* VFMADDSUB: even=sub, odd=add */
+    TEST_CHECK(xmm0_out[0] == 19.0f);   /* 2*10 - 1 */
+    TEST_CHECK(xmm0_out[1] == 31.0f);   /* 3*10 + 1 */
+    TEST_CHECK(xmm0_out[2] == 39.0f);   /* 4*10 - 1 */
+    TEST_CHECK(xmm0_out[3] == 51.0f);   /* 5*10 + 1 */
+
+    OK(uc_close(uc));
+}
+
+/* Test VFMADD132SS xmm0, xmm1, xmm2 (scalar single 132 form):
+ * xmm0[0] = xmm0[0] * xmm2[0] + xmm1[0], upper elements unchanged
+ * xmm0={2.0, 99, 99, 99}, xmm1={100, 88, 88, 88}, xmm2={5, 77, 77, 77}
+ * Result[0] = 2*5+100 = 110, rest from xmm0 = {99,99,99}
+ */
+static void test_x86_fma_vfmadd132ss(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vfmadd132ss xmm0, xmm1, xmm2
+     * VEX.LIG.66.0F38.W0 99 /r
+     * C4 E2 71 99 C2
+     */
+    char code[] = { '\xC4', '\xE2', '\x71', '\x99', '\xC2' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    float xmm0_in[4] = { 2.0f, 99.0f, 99.0f, 99.0f };
+    float xmm1_in[4] = { 100.0f, 88.0f, 88.0f, 88.0f };
+    float xmm2_in[4] = { 5.0f, 77.0f, 77.0f, 77.0f };
+    OK(uc_reg_write(uc, UC_X86_REG_XMM0, xmm0_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM1, xmm1_in));
+    OK(uc_reg_write(uc, UC_X86_REG_XMM2, xmm2_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float xmm0_out[4];
+    OK(uc_reg_read(uc, UC_X86_REG_XMM0, xmm0_out));
+    /* 132 scalar: xmm0[0] = xmm0[0] * xmm2[0] + xmm1[0] = 2*5+100 = 110 */
+    TEST_CHECK(xmm0_out[0] == 110.0f);
+
+    OK(uc_close(uc));
+}
+
+/* Test VCVTPS2PH + VCVTPH2PS YMM round-trip */
+static void test_x86_f16c_ymm(void)
+{
+    uc_engine *uc;
+
+    /*
+     * vcvtps2ph xmm1, ymm0, 0   ; convert 8 floats to 8 half-floats in xmm1
+     * VEX.256.66.0F3A.W0 1D /r ib
+     * C4 E3 7D 1D C1 00
+     *
+     * vcvtph2ps ymm2, xmm1       ; convert 8 half-floats back to 8 floats
+     * VEX.256.66.0F38.W0 13 /r
+     * C4 E2 7D 13 D1
+     */
+    char code[] = {
+        '\xC4', '\xE3', '\x7D', '\x1D', '\xC1', '\x00',  /* vcvtps2ph xmm1, ymm0, 0 */
+        '\xC4', '\xE2', '\x7D', '\x13', '\xD1'            /* vcvtph2ps ymm2, xmm1 */
+    };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    float ymm0_in[8] = { 1.0f, 2.0f, -0.5f, 65504.0f, 0.0f, -1.0f, 0.25f, 3.0f };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM0, ymm0_in));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    float ymm2_out[8];
+    OK(uc_reg_read(uc, UC_X86_REG_YMM2, ymm2_out));
+    /* Round-trip should preserve these values exactly */
+    TEST_CHECK(ymm2_out[0] == 1.0f);
+    TEST_CHECK(ymm2_out[1] == 2.0f);
+    TEST_CHECK(ymm2_out[2] == -0.5f);
+    TEST_CHECK(ymm2_out[3] == 65504.0f);
+    TEST_CHECK(ymm2_out[4] == 0.0f);
+    TEST_CHECK(ymm2_out[5] == -1.0f);
+    TEST_CHECK(ymm2_out[6] == 0.25f);
+    TEST_CHECK(ymm2_out[7] == 3.0f);
+
+    OK(uc_close(uc));
+}
+
+static void test_x86_avx_vxorps_ymm(void)
+{
+    uc_engine *uc;
+    uint64_t ymm0[4];
+
+    /*
+     * Set ymm0 to all-ones, then vxorps ymm0, ymm0, ymm0 should zero it.
+     *
+     * vxorps ymm0, ymm0, ymm0  ; C5 FC 57 C0
+     */
+    char code[] = { '\xC5', '\xFC', '\x57', '\xC0' };
+
+    OK(uc_open(UC_ARCH_X86, UC_MODE_64, &uc));
+    OK(uc_mem_map(uc, 0, 2 * 1024 * 1024, UC_PROT_ALL));
+    OK(uc_mem_write(uc, 0x1000, code, sizeof(code)));
+
+    /* Set ymm0 to all-ones */
+    uint64_t all_ones[4] = { 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL,
+                              0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL };
+    OK(uc_reg_write(uc, UC_X86_REG_YMM0, &all_ones));
+
+    OK(uc_emu_start(uc, 0x1000, 0x1000 + sizeof(code), 0, 0));
+
+    OK(uc_reg_read(uc, UC_X86_REG_YMM0, &ymm0));
+    TEST_CHECK(ymm0[0] == 0);
+    TEST_CHECK(ymm0[1] == 0);
+    TEST_CHECK(ymm0[2] == 0);
+    TEST_CHECK(ymm0[3] == 0);
+
+    OK(uc_close(uc));
+}
+
 static void test_x86_invalid_vex_l(void)
 {
     uc_engine *uc;
@@ -1292,8 +3201,8 @@ static void test_x86_invalid_vex_l(void)
 
     OK(uc_mem_write(uc, 0, code, sizeof(code) / sizeof(code[0])));
 
-    uc_assert_err(UC_ERR_INSN_INVALID,
-                  uc_emu_start(uc, 0, sizeof(code) / sizeof(code[0]), 0, 0));
+    /* VEX.L=1 (256-bit) instructions are now supported with AVX */
+    OK(uc_emu_start(uc, 0, sizeof(code) / sizeof(code[0]), 0, 0));
     OK(uc_close(uc));
 }
 
@@ -2128,7 +4037,7 @@ static void test_x86_hook_insn_rdtscp(void)
     OK(uc_close(uc));
 }
 
-static void test_x86_dr7()
+static void test_x86_dr7(void)
 {
     uc_engine *uc;
     char code[] =
@@ -2151,7 +4060,7 @@ static void test_x86_hook_block_cb(uc_engine *uc, uint64_t address,
     *((uint64_t *)user_data) += 1;
 }
 
-static void test_x86_hook_block()
+static void test_x86_hook_block(void)
 {
     uc_engine *uc;
     char code[] = "\xeb\x02\x90\x90\x90\x90\x90\x90"; // jmp 4; nop; nop; nop;
@@ -2241,6 +4150,47 @@ TEST_LIST = {
     {"test_x86_correct_address_in_long_jump_hook",
      test_x86_correct_address_in_long_jump_hook},
     {"test_x86_invalid_vex_l", test_x86_invalid_vex_l},
+    {"test_x86_avx_vaddps_ymm", test_x86_avx_vaddps_ymm},
+    {"test_x86_avx_vmovdqu_ymm", test_x86_avx_vmovdqu_ymm},
+    {"test_x86_avx_vzeroupper", test_x86_avx_vzeroupper},
+    {"test_x86_avx_vxorps_ymm", test_x86_avx_vxorps_ymm},
+    {"test_x86_avx_vmovdqu_store", test_x86_avx_vmovdqu_store},
+    {"test_x86_avx_vbroadcastss", test_x86_avx_vbroadcastss},
+    {"test_x86_avx_vperm2f128", test_x86_avx_vperm2f128},
+    {"test_x86_avx_vinsertf128", test_x86_avx_vinsertf128},
+    {"test_x86_avx_vextractf128", test_x86_avx_vextractf128},
+    {"test_x86_avx_vpermilps", test_x86_avx_vpermilps},
+    {"test_x86_avx_vpermilpd", test_x86_avx_vpermilpd},
+    {"test_x86_avx_vpminsd", test_x86_avx_vpminsd},
+    {"test_x86_avx_vtestps", test_x86_avx_vtestps},
+    {"test_x86_avx_vtestpd", test_x86_avx_vtestpd},
+    {"test_x86_avx_vmaskmovps", test_x86_avx_vmaskmovps},
+    {"test_x86_avx_vblendps_ymm", test_x86_avx_vblendps_ymm},
+    {"test_x86_avx_vpalignr_ymm", test_x86_avx_vpalignr_ymm},
+    {"test_x86_avx_vblendvps", test_x86_avx_vblendvps},
+    {"test_x86_avx_vblendvpd", test_x86_avx_vblendvpd},
+    {"test_x86_avx_vpblendvb", test_x86_avx_vpblendvb},
+    {"test_x86_avx_vpmovsxbw_ymm", test_x86_avx_vpmovsxbw_ymm},
+    {"test_x86_avx_vpmovzxbd_ymm", test_x86_avx_vpmovzxbd_ymm},
+    {"test_x86_avx2_vpbroadcastd", test_x86_avx2_vpbroadcastd},
+    {"test_x86_avx2_vperm2i128", test_x86_avx2_vperm2i128},
+    {"test_x86_avx2_vpermd", test_x86_avx2_vpermd},
+    {"test_x86_avx2_vpermq", test_x86_avx2_vpermq},
+    {"test_x86_avx2_vpsllvd", test_x86_avx2_vpsllvd},
+    {"test_x86_avx2_vpacksswb_ymm", test_x86_avx2_vpacksswb_ymm},
+    {"test_x86_avx2_vpgatherdd", test_x86_avx2_vpgatherdd},
+    {"test_x86_avx_vroundss", test_x86_avx_vroundss},
+    {"test_x86_avx2_vpblendd", test_x86_avx2_vpblendd},
+    {"test_x86_fma_vfmadd231ps", test_x86_fma_vfmadd231ps},
+    {"test_x86_fma_vfnmsub213sd", test_x86_fma_vfnmsub213sd},
+    {"test_x86_f16c", test_x86_f16c},
+    {"test_x86_avx2_vphaddw_ymm", test_x86_avx2_vphaddw_ymm},
+    {"test_x86_fma_vfmadd132ps", test_x86_fma_vfmadd132ps},
+    {"test_x86_fma_vfmadd213ps", test_x86_fma_vfmadd213ps},
+    {"test_x86_fma_vfmadd231ps_ymm", test_x86_fma_vfmadd231ps_ymm},
+    {"test_x86_fma_vfmaddsub231ps", test_x86_fma_vfmaddsub231ps},
+    {"test_x86_fma_vfmadd132ss", test_x86_fma_vfmadd132ss},
+    {"test_x86_f16c_ymm", test_x86_f16c_ymm},
 #if !defined(TARGET_READ_INLINED) && defined(BOOST_LITTLE_ENDIAN)
     {"test_x86_unaligned_access", test_x86_unaligned_access},
     {"test_x86_64_unaligned_access", test_x86_64_unaligned_access},
